@@ -1,0 +1,15 @@
+{
+  "_comment": "Merge the mcp_servers block into ~/.openharness/settings.json. The API key is read by the MCP server from the environment, never from this file.",
+  "mcp_servers": {
+    "lab_mcp": {
+      "type": "stdio",
+      "command": "C:/RNAHarness/.venv/Scripts/python.exe",
+      "args": ["-m", "rnaharness.servers.lab_mcp"],
+      "cwd": "C:/RNAHarness",
+      "env": {
+        "PYTHONPATH": "C:/RNAHarness",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

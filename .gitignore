@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+gateway/node_modules/
+gateway/dist/
+gateway-data/
+runs/
+_refs/*.zip
+
+# Local reference checkouts and agent state
+_refs/
+.claude/
+.claude-flow/
+.openharness/
+.tmp-*/
+.pytest_cache/
+.env
+.env.*
+*.log
