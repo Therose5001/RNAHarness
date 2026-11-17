@@ -9,14 +9,13 @@ native OpenAI-style tool-call loop over the already-landed RNAHarness tools.
 No external key, no egress: all inference stays on 127.0.0.1:8091 and all
 tool calls are local. Never invents tool output.
 
-Two reliability rules learned from a real multi-tool task (2026-11-14):
-  * Exact sequences are passed by REFERENCE ID, registered from the original
-    prompt by a deterministic regex. Asking an LLM to re-type a 50 nt window
-    silently dropped a base. A near-match repair is kept as a second line of
-    defence, and any repair is reported in the tool output.
-  * A truncated generation (finish_reason == "length") is never reported as a
-    successful answer. Generation continues a bounded number of times; if it
-    is still truncated, an error event is emitted instead of `done`.
+Reliability rules learned from local multi-tool tasks (2026-11-14/17):
+  * Exact sequences use reference IDs; a truncated generation is continued a
+    bounded number of times and is never reported as a successful answer.
+  * Prompt junk is sanitized, final text and deltas use a narrow sentinel, and
+    failures with real tool events fall back to a bounded, evidence-only receipt.
+  * The final turn uses a user role: the current llama.cpp Jinja template
+    rejects a system message after the first user message.
 
     python scripts/occamy_kernel.py -p "<prompt>" --output-format stream-json
 """
@@ -51,7 +50,10 @@ MAX_CONTINUATIONS = int(os.environ.get("OCCAMY_MAX_CONTINUATIONS", "3"))
 from rnaharness import kernel_catalog
 from rnaharness.kernel_catalog import (EXTRA_SPEC, SYSTEM, CONTINUE_HINT)
 from rnaharness.kernel_sequences import register_refs, ref_hint, _resolve, _repair_sequence
-from rnaharness.kernel_execution import ToolRunCache, result_artifacts
+from rnaharness.kernel_execution import (
+    ToolRunCache, deterministic_summary, result_artifacts, sanitize_prompt,
+    strip_literal_tool_markup,
+)
 from rnaharness.kernel_structure import structure_ref, run_structure
 
 # Module-level aliases remain stable for callers that monkeypatch the kernel.
@@ -80,13 +82,23 @@ def chat(messages: list[dict], with_tools: bool = True) -> dict:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
+_JUNK_RUN = re.compile(r"[?\uff1f\ufffd]{24,}|(.)\1{499,}", re.DOTALL)
+
+
 def degenerate(text: str) -> bool:
-    """Sentinel: reject the known '???' degeneration, empty or repeated junk."""
+    """Reject empty, replacement-character, punctuation or repeated junk output."""
     t = (text or "").strip()
     if not t:
         return True
-    if len(set(t)) <= 2 and len(t) > 8:
+    if "\ufffd" in t or _JUNK_RUN.search(t):
         return True
+    if len(t) in range(16, 500) and len(set(t)) <= 2:
+        return True
+    significant = [c for c in t if not c.isspace()]
+    if len(significant) >= 24:
+        for c in ("?", "\uff1f", ".", "\u3002", ")", "("):
+            if significant.count(c) / len(significant) >= 0.9:
+                return True
     return False
 
 
@@ -261,15 +273,8 @@ def tool_call(name: str, args: dict, refs: dict[str, str] | None = None) -> dict
         return {"ok": False,
                 "error": {"code": type(exc).__name__, "message": str(exc)[:300]}}
 
-# --------------------------------------------------------------------------
-# continuation helpers
-# --------------------------------------------------------------------------
 def _trim_overlap(accumulated: str, nxt: str) -> str:
-    """Drop the repeated prefix when a continuation restates the tail.
-
-    Occamy often re-emits the last part of the previous chunk when asked to
-    continue. Example: accumulated "abcde", continuation "defgh" -> "fgh".
-    """
+    """Drop a repeated tail (e.g. "abcde" + "defgh" -> "fgh") on continuation."""
     for k in range(min(len(accumulated), len(nxt), 100), 2, -1):
         if accumulated[-k:] == nxt[:k]:
             return nxt[k:]
@@ -277,8 +282,22 @@ def _trim_overlap(accumulated: str, nxt: str) -> str:
 
 
 def _emit_deltas(text: str) -> None:
+    if degenerate(text):
+        return
     for i in range(0, len(text), 24):
         emit({"type": "assistant_delta", "text": text[i:i + 24]})
+
+
+def _finish_ok(text: str, started: float, continuations: int) -> bool:
+    """Validate a complete answer before emitting any delta or completion event."""
+    final_text = _enforce_chinese_start(text.strip())
+    if degenerate(final_text):
+        return False
+    emit({"type": "assistant_complete", "text": final_text})
+    emit({"type": "done", "text": final_text,
+          "continuations": continuations,
+          "elapsed_ms": int((time.monotonic() - started) * 1000)})
+    return True
 
 
 _LEAD_IN = re.compile(
@@ -287,8 +306,7 @@ _LEAD_IN = re.compile(
 
 
 def _enforce_chinese_start(text: str) -> str:
-    """Occamy sometimes emits an English lead-in despite a Chinese-only system
-    prompt. Drop only that first line; never alter the substantive content."""
+    """Drop only an English lead-in; never alter the substantive content."""
     return _LEAD_IN.sub("", text, count=1).lstrip()
 
 
@@ -304,31 +322,36 @@ def main(argv=None) -> int:
               "recoverable": False})
         return 2
 
-    refs = register_refs(args.prompt)
+    clean_prompt = sanitize_prompt(args.prompt)
+    refs = register_refs(clean_prompt)
     messages = [{"role": "system", "content": SYSTEM},
-                {"role": "user", "content": args.prompt + ref_hint(refs)}]
+                {"role": "user", "content": clean_prompt + ref_hint(refs)}]
     started = time.monotonic()
     cache = ToolRunCache(tool_call, refs)
     force_final = False
+    tool_runs = []
+    artifacts = []
     try:
-        direct_ref = structure_ref(args.prompt, refs)
+        direct_ref = structure_ref(clean_prompt, refs)
         if direct_ref:
             return run_structure(direct_ref, refs, tool_call, emit)
         for _turn in range(args.max_turns):
             try:
                 finalizing = force_final or _turn == args.max_turns - 1
                 if finalizing:
-                    messages.append({"role": "system", "content":
-                        "停止调用工具。仅依据已有工具结果回答，明确说明已完成、失败或尚未完成的部分；"
+                    # llama.cpp's current Jinja template rejects a system role
+                    # after the first user message; keep the final turn as user.
+                    messages.append({"role": "user", "content":
+                        "现在停止调用工具。仅依据已有工具结果回答，明确说明已完成、失败或尚未完成的部分；"
                         "PDB仅可引用实际返回的artifact名称，不能把二级结构当成PDB或声称附件已送达。"})
                 resp = chat(messages, with_tools=not finalizing)
             except urllib.error.HTTPError as exc:
-                emit({"type": "error", "message": "Occamy HTTP %s: %s" % (
+                emit({"type": "error", "message": "KERNEL_FAILED: Occamy HTTP %s: %s" % (
                     exc.code, exc.read(200).decode("utf-8", "replace")),
                     "recoverable": False})
                 return 1
             except Exception as exc:
-                emit({"type": "error", "message": "%s: %s" % (
+                emit({"type": "error", "message": "KERNEL_FAILED: %s: %s" % (
                     type(exc).__name__, exc), "recoverable": False})
                 return 1
             choices = resp.get("choices") or []
@@ -341,7 +364,15 @@ def main(argv=None) -> int:
             calls = msg.get("tool_calls") or []
             if calls:
                 if finalizing:
-                    emit({"type": "error", "message": "TOOL_LOOP_EXCEEDED: model ignored finalization",
+                    if tool_runs:
+                        emit({"type": "status", "message":
+                              "强制收尾仍返回工具调用，改由确定性回执汇总真实工具结果"})
+                        text = deterministic_summary(tool_runs, artifacts,
+                                                      "强制收尾仍返回工具调用")
+                        if _finish_ok(text, started, 0):
+                            return 0
+                    emit({"type": "error", "message":
+                          "TOOL_LOOP_EXCEEDED: model ignored finalization",
                           "recoverable": False})
                     return 1
                 messages.append({"role": "assistant",
@@ -364,6 +395,10 @@ def main(argv=None) -> int:
                     force_final = force_final or reused
                     ok = bool(result.get("ok"))
                     brief = _result_brief(result)
+                    tool_runs.append((name, ok, brief))
+                    for artifact in result_artifacts(result):
+                        if isinstance(artifact, dict):
+                            artifacts.append(artifact)
                     emit({"type": "status", "message":
                           ("完成：" if ok else "失败：") + label + " · " + brief})
                     emit({"type": "tool_completed", "tool_name": name,
@@ -376,18 +411,36 @@ def main(argv=None) -> int:
                 continue
 
             # final answer branch
-            text = msg.get("content") or ""
+            raw_text = msg.get("content") or ""
+            text = strip_literal_tool_markup(raw_text)
             finish = str(choice.get("finish_reason") or "")
-            if degenerate(text) and (text.strip() or finish != "length"):
-                emit({"type": "error",
-                      "message": "MODEL_DEGENERATED: Occamy output failed the degeneration sentinel",
+            continuations = 0
+
+            def fallback_or_fail(reason: str, code: str) -> int:
+                if tool_runs:
+                    emit({"type": "status", "message":
+                          "模型输出不可用，改由确定性回执汇总真实工具结果"})
+                    if _finish_ok(deterministic_summary(tool_runs, artifacts, reason),
+                                  started, continuations):
+                        return 0
+                emit({"type": "error", "message": "%s: %s" % (code, reason),
                       "recoverable": False})
                 return 1
-            parts = [text]
+
+            if text != raw_text.strip():
+                emit({"type": "status", "message": "已移除字面工具标签文本"})
+            if degenerate(text):
+                if finish == "length":
+                    emit({"type": "error",
+                          "message": "MODEL_DEGENERATED: Occamy output failed the degeneration sentinel",
+                          "recoverable": False})
+                    return 1
+                return fallback_or_fail(
+                    "Occamy output failed the degeneration sentinel",
+                    "DEGENERATE_OUTPUT")
+            parts = [text] if text else []
             accumulated = text
-            if text:
-                _emit_deltas(text)
-            continuations = 0
+            _emit_deltas(text)
             while finish == "length" and continuations < MAX_CONTINUATIONS:
                 continuations += 1
                 emit({"type": "status", "message":
@@ -397,45 +450,45 @@ def main(argv=None) -> int:
                 try:
                     resp2 = chat(messages, with_tools=False)
                 except Exception as exc:
-                    emit({"type": "error",
-                          "message": "续写失败：%s: %s" % (type(exc).__name__, exc),
-                          "recoverable": False})
-                    return 1
+                    return fallback_or_fail(
+                        "续写失败：%s: %s" % (type(exc).__name__, exc),
+                        "KERNEL_TIMEOUT")
                 ch2 = (resp2.get("choices") or [{}])[0]
                 m2 = ch2.get("message") or {}
                 raw_next = m2.get("content") or ""
-                if degenerate(raw_next):
-                    emit({"type": "error", "message": "MODEL_DEGENERATED: invalid continuation",
-                          "recoverable": False})
-                    return 1
+                nxt = strip_literal_tool_markup(raw_next)
                 finish = str(ch2.get("finish_reason") or "")
-                nxt = _trim_overlap(accumulated, raw_next)
+                if degenerate(nxt) and finish != "length":
+                    return fallback_or_fail("续写输出触发退化检查", "DEGENERATE_OUTPUT")
+                nxt = _trim_overlap(accumulated, nxt)
                 if nxt:
                     parts.append(nxt)
                     accumulated += nxt
                     _emit_deltas(nxt)
                 text = raw_next
             if finish == "length":
-                emit({"type": "error",
-                      "message": "输出在 %d 次续写后仍被截断，不返回不完整结果"
-                                 % continuations, "recoverable": False})
-                return 1
+                return fallback_or_fail(
+                    "输出在 %d 次续写后仍被截断，不返回不完整结果" % continuations,
+                    "OUTPUT_TRUNCATED")
             final_text = _enforce_chinese_start("".join(parts).strip())
             if degenerate(final_text):
-                emit({"type": "error",
-                      "message": "Occamy output failed the degeneration sentinel",
-                      "recoverable": False})
-                return 1
-            emit({"type": "assistant_complete", "text": final_text})
-            emit({"type": "done", "text": final_text,
-                  "continuations": continuations,
-                  "elapsed_ms": int((time.monotonic() - started) * 1000)})
-            return 0
-        emit({"type": "error", "message": "tool loop exceeded max_turns",
+                return fallback_or_fail("Occamy output failed the degeneration sentinel",
+                                        "DEGENERATE_OUTPUT")
+            if _finish_ok(final_text, started, continuations):
+                return 0
+            return fallback_or_fail("最终输出触发退化检查", "DEGENERATE_OUTPUT")
+        if tool_runs:
+            emit({"type": "status", "message":
+                  "工具轮次已用尽，改由确定性回执汇总真实工具结果"})
+            if _finish_ok(deterministic_summary(tool_runs, artifacts,
+                                                 "tool loop exceeded max_turns"),
+                          started, 0):
+                return 0
+        emit({"type": "error", "message": "TOOL_LOOP_EXCEEDED: tool loop exceeded max_turns",
               "recoverable": False})
         return 1
     except Exception as exc:
-        emit({"type": "error", "message": "%s: %s" % (type(exc).__name__, exc),
+        emit({"type": "error", "message": "KERNEL_FAILED: %s: %s" % (type(exc).__name__, exc),
               "recoverable": False})
         return 1
 

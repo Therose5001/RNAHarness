@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { logger } from './logger.ts';
 import { buildPrompt, type SessionStore, type Turn } from './sessions.ts';
 import type { Channel, GatewayEvent, KernelEvent, ResearchArtifact } from './types.ts';
-import type { Kernel } from './kernel.ts';
+import { isDegenerate, type Kernel } from './kernel.ts';
 
 export interface GatewayOptions {
   ackText?: string;
@@ -76,6 +76,7 @@ export class Gateway {
     const prompt = buildPrompt(session, content, this.preamble);
     let finalText = '';
     let failed = false;
+    let hardError = false;
 
     try {
       for await (const event of this.kernel.run({
@@ -84,22 +85,33 @@ export class Gateway {
         workspace: session.workspace,
       })) {
         this.mapKernelEvent(task, event);
-        if (event.type === 'assistant_complete' && event.text) finalText = event.text;
-        if (event.type === 'done' && event.text) finalText = event.text;
+        if (event.type === 'assistant_complete' && event.text && !isDegenerate(event.text)) finalText = event.text;
+        if (event.type === 'done' && event.text && !isDegenerate(event.text)) finalText = event.text;
         if (event.type === 'error' && !event.recoverable) {
           failed = true;
-          this.emit(task, { type: 'task.failed', task_id: task.id, message: event.message });
+          if (!hardError) {
+            hardError = true;
+            this.emit(task, { type: 'task.failed', task_id: task.id, message: event.message });
+          }
         }
       }
     } catch (err) {
       failed = true;
       const message = err instanceof Error ? err.message : String(err);
       logger.error('kernel run failed', { task: task.id, error: message });
-      this.emit(task, { type: 'task.failed', task_id: task.id, message });
+      if (!hardError) {
+        hardError = true;
+        this.emit(task, { type: 'task.failed', task_id: task.id, message });
+      }
     }
 
     task.finished = true;
-    if (!failed && finalText.trim()) {
+    if (!failed && isDegenerate(finalText)) {
+      const message = 'DEGENERATE_OUTPUT: kernel returned repeated junk';
+      logger.warn('kernel final text rejected', { task: task.id });
+      this.emit(task, { type: 'task.failed', task_id: task.id, message });
+      await this.channel.sendMessage(task.chatJid, '内核输出异常，未发送结果。').catch(() => undefined);
+    } else if (!failed && finalText.trim()) {
       for (const artifact of task.artifacts.values()) {
         this.emit(task, { type: 'artifact.ready', task_id: task.id, ...artifact });
       }
@@ -120,7 +132,9 @@ export class Gateway {
   private mapKernelEvent(task: Task, event: KernelEvent): void {
     switch (event.type) {
       case 'assistant_delta':
-        if (event.text) this.emit(task, { type: 'answer.delta', task_id: task.id, text: event.text });
+        if (event.text && !isDegenerate(event.text)) {
+          this.emit(task, { type: 'answer.delta', task_id: task.id, text: event.text });
+        }
         break;
       case 'status':
         // Kernel progress lines (tool labels / completion briefs) are surfaced

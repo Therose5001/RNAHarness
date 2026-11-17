@@ -84,6 +84,8 @@ export class OpenHarnessOneShot implements Kernel {
     signal?.addEventListener('abort', onAbort, { once: true });
 
     let finalText = '';
+    let hardError = false;
+    let deltaText = '';
     try {
       if (!child.stdout) {
         yield {
@@ -97,7 +99,9 @@ export class OpenHarnessOneShot implements Kernel {
       for await (const line of lines) {
         const event = parseKernelLine(line);
         if (!event) continue;
+        if (event.type === 'assistant_delta' && event.text) deltaText += event.text;
         if (event.type === 'assistant_complete' && event.text) finalText = event.text;
+        if (event.type === 'error' && !event.recoverable) hardError = true;
         yield event;
       }
       const exitCode = await exitPromise;
@@ -106,13 +110,15 @@ export class OpenHarnessOneShot implements Kernel {
         return;
       }
       if (exitCode !== 0) {
-        yield {
-          type: 'error',
-          message: stderrTail.trim() || `kernel exited with code ${exitCode}`,
-          recoverable: false,
-        };
-      } else {
-        yield { type: 'done', text: finalText };
+        if (!hardError) {
+          yield {
+            type: 'error',
+            message: stderrTail.trim() || `KERNEL_FAILED: kernel exited with code ${exitCode}`,
+            recoverable: false,
+          };
+        }
+      } else if (!hardError && !isDegenerate(finalText || deltaText)) {
+        yield { type: 'done', text: finalText || '' };
       }
     } finally {
       clearTimeout(timer);
@@ -172,4 +178,15 @@ export function parseKernelLine(line: string): KernelEvent | null {
     default:
       return null;
   }
+}
+
+/** Narrow sentinel for repeated-character model degeneration. */
+export function isDegenerate(text: string): boolean {
+  const value = (text || '').trim();
+  if (!value) return true;
+  if (value.includes('\ufffd')) return true;
+  const significant = [...value].filter(c => !/\s/u.test(c));
+  if (significant.length >= 24 && ['?', '\uff1f', '.', '\u3002', ')', '(']
+      .some(c => significant.filter(x => x === c).length / significant.length >= 0.9)) return true;
+  return false;
 }

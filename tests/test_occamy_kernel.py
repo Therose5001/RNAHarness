@@ -390,6 +390,67 @@ def test_explicit_pdb_request_uses_real_tool_without_model(monkeypatch, capsys, 
     assert events[2]['artifacts'][0]['name'] == 'model.pdb'
 
 
+def test_prompt_hygiene_and_narrow_sentinel():
+    long = "今天怎么样？" + "?" * 5000
+    clean = mod.sanitize_prompt(long)
+    assert "?" * 24 not in clean
+    assert "[已过滤异常重复字符]" in clean
+    assert len(mod.sanitize_prompt("A" * 13000)) <= 12020
+    assert not mod.degenerate("原文" * 4000)
+    assert mod.degenerate("?" * 5000)
+    assert mod.degenerate("\ufffd" * 24)
+    assert not mod.degenerate("今天怎么样？")
+
+
+def test_literal_tool_markup_is_removed_only_from_content():
+    text = "答案<tool_call>{\"name\":\"lab_inventory\"}</tool_call>尾部<tool_call>"
+    assert mod.strip_literal_tool_markup(text) == "答案尾部"
+
+
+def test_final_turn_uses_user_role(monkeypatch, capsys):
+    seen = []
+    def fake_chat(messages, with_tools=True):
+        seen.append([m["role"] for m in messages])
+        return {"choices": [{"finish_reason": "stop",
+                             "message": {"content": "已完成。"}}]}
+    monkeypatch.setattr(mod, "chat", fake_chat)
+    assert mod.main(["-p", "请汇总", "--max-turns", "1"]) == 0
+    assert seen[0] == ["system", "user", "user"]
+    assert "已完成。" in capsys.readouterr().out
+
+
+def test_question_mark_context_does_not_leak_into_answer(monkeypatch, capsys):
+    def fake_chat(messages, with_tools=True):
+        assert "?" * 24 not in messages[1]["content"]
+        return {"choices": [{"finish_reason": "stop",
+                             "message": {"content": "本机工具清单已返回。"}}]}
+    monkeypatch.setattr(mod, "chat", fake_chat)
+    assert mod.main(["-p", "有哪些工具？" + "?" * 5000]) == 0
+    out = capsys.readouterr().out
+    assert "本机工具清单已返回。" in out
+    assert "?" * 24 not in out
+
+
+def test_degenerate_answer_with_tool_results_uses_bounded_receipt(monkeypatch, capsys):
+    replies = [
+        {"choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [
+            {"id": "c1", "function": {"name": "lab_inventory", "arguments": "{}"}}]}}]},
+        {"choices": [{"finish_reason": "stop", "message": {"content": "?" * 5000}}]},
+    ]
+    idx = [0]
+    def fake_chat(messages, with_tools=True):
+        r = replies[min(idx[0], len(replies) - 1)]
+        idx[0] += 1
+        return r
+    monkeypatch.setattr(mod, "chat", fake_chat)
+    assert mod.main(["-p", "有哪些工具", "--max-turns", "4"]) == 0
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    done = [e for e in events if e["type"] == "done"]
+    assert len(done) == 1 and "lab_inventory" in done[0]["text"]
+    assert "?" * 24 not in done[0]["text"]
+    assert all("?" * 24 not in e.get("text", "") for e in events)
+
+
 def test_structure_routing_is_conservative():
     from rnaharness.kernel_structure import structure_ref
     refs = {'seq:1': 'AUAUUAUAUAUAU'}

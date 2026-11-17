@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { Gateway } from '../src/gateway.ts';
 import { HttpChannel } from '../src/channels/http.ts';
 import { SessionStore, buildPrompt } from '../src/sessions.ts';
-import { parseKernelLine, type Kernel } from '../src/kernel.ts';
+import { parseKernelLine, isDegenerate, type Kernel } from '../src/kernel.ts';
 import type { KernelEvent } from '../src/types.ts';
 
 function tempStore(): SessionStore {
@@ -37,6 +37,21 @@ test('parseKernelLine maps stream-json events and drops junk', () => {
   assert.equal(parseKernelLine('{"type":"unknown"}'), null);
 });
 
+test('degenerate final text is not completed or saved', async () => {
+  const store = tempStore();
+  const channel = new HttpChannel(async () => undefined);
+  await channel.connect();
+  const gw = new Gateway(channel, new FakeKernel([
+    { type: 'assistant_complete', text: '?'.repeat(5000) },
+    { type: 'done', text: '?'.repeat(5000) },
+  ]), store);
+  const taskId = await gw.handleInbound('http:degenerate', 'hello');
+  const events = await waitFor(gw, taskId, 'task.failed');
+  assert.equal(events.some(e => e.type === 'answer.completed'), false);
+  assert.equal(store.get('http:degenerate')?.history.length, 0);
+  assert.ok(isDegenerate('?'.repeat(5000)));
+  assert.equal(isDegenerate('今天怎么样？'), false);
+});
 test('happy path: ack, events, answer, session history', async () => {
   const store = tempStore();
   const channel = new HttpChannel(async () => undefined);
