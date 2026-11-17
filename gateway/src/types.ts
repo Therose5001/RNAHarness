@@ -28,12 +28,18 @@ export interface Channel {
 export type OnInboundMessage = (chatJid: string, message: NewMessage) => void | Promise<void>;
 
 /** Kernel events, normalised over whatever the kernel actually emits. */
+export interface ResearchArtifact {
+  worker: string;
+  job_id: string;
+  name: string;
+}
+
 export type KernelEvent =
   | { type: 'system'; message: string }
   | { type: 'assistant_delta'; text: string }
   | { type: 'assistant_complete'; text: string }
   | { type: 'tool_started'; tool_name: string; tool_input: unknown }
-  | { type: 'tool_completed'; tool_name: string; output: string; is_error: boolean }
+  | { type: 'tool_completed'; tool_name: string; output: string; is_error: boolean; artifacts?: ResearchArtifact[] }
   | { type: 'status'; message: string }
   | { type: 'error'; message: string; recoverable: boolean }
   | { type: 'done'; text: string };
@@ -46,4 +52,5 @@ export type GatewayEvent =
   | { type: 'tool.completed'; task_id: string; tool_name: string; is_error: boolean }
   | { type: 'answer.delta'; task_id: string; text: string }
   | { type: 'answer.completed'; task_id: string; text: string }
+  | { type: 'artifact.ready'; task_id: string; worker: string; job_id: string; name: string }
   | { type: 'task.failed'; task_id: string; message: string };

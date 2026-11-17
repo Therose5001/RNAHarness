@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from './logger.ts';
-import type { KernelEvent } from './types.ts';
+import type { KernelEvent, ResearchArtifact } from './types.ts';
 
 export interface KernelRequest {
   prompt: string;
@@ -144,13 +144,25 @@ export function parseKernelLine(line: string): KernelEvent | null {
       return { type: 'status', message: str('message') };
     case 'tool_started':
       return { type, tool_name: str('tool_name'), tool_input: obj['tool_input'] };
-    case 'tool_completed':
+    case 'tool_completed': {
+      const artifacts: ResearchArtifact[] = [];
+      if (Array.isArray(obj['artifacts'])) {
+        for (const item of obj['artifacts'].slice(0, 4)) {
+          if (item && item.worker === 'rhofold' && typeof item.job_id === 'string'
+              && /^[A-Za-z0-9_-]{1,100}$/.test(item.job_id)
+              && typeof item.name === 'string' && /^[A-Za-z0-9_-]{1,100}\.pdb$/.test(item.name)) {
+            artifacts.push({ worker: item.worker, job_id: item.job_id, name: item.name });
+          }
+        }
+      }
       return {
         type,
         tool_name: str('tool_name'),
         output: str('output'),
         is_error: obj['is_error'] === true,
+        artifacts,
       };
+    }
     case 'error':
       return {
         type,

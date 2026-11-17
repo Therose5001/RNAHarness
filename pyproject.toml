@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "RNA research harness: MCP tools + gateway + OpenHarness kernel"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=2.0",
+    "mcp>=1.2,<2",
 ]
 
 [project.scripts]
@@ -19,3 +19,4 @@ packages = ["rnaharness"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["live: requires a running local worker or external service"]

@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from './logger.ts';
 import { buildPrompt, type SessionStore, type Turn } from './sessions.ts';
-import type { Channel, GatewayEvent, KernelEvent } from './types.ts';
+import type { Channel, GatewayEvent, KernelEvent, ResearchArtifact } from './types.ts';
 import type { Kernel } from './kernel.ts';
 
 export interface GatewayOptions {
@@ -24,6 +24,7 @@ interface Task {
   events: GatewayEvent[];
   subscribers: Set<(ev: GatewayEvent) => void>;
   finished: boolean;
+  artifacts: Map<string, ResearchArtifact>;
 }
 
 const DEFAULT_PREAMBLE = [
@@ -99,6 +100,9 @@ export class Gateway {
 
     task.finished = true;
     if (!failed && finalText.trim()) {
+      for (const artifact of task.artifacts.values()) {
+        this.emit(task, { type: 'artifact.ready', task_id: task.id, ...artifact });
+      }
       this.sessions.append(task.chatJid, userTurn(content));
       this.sessions.append(task.chatJid, assistantTurn(finalText));
       this.emit(task, { type: 'answer.completed', task_id: task.id, text: finalText });
@@ -118,6 +122,14 @@ export class Gateway {
       case 'assistant_delta':
         if (event.text) this.emit(task, { type: 'answer.delta', task_id: task.id, text: event.text });
         break;
+      case 'status':
+        // Kernel progress lines (tool labels / completion briefs) are surfaced
+        // as answer.delta with a marker so the web UI can render a live trace.
+        if (event.message) {
+          this.emit(task, { type: 'answer.delta', task_id: task.id,
+                            text: '\u0001progress\u0001' + event.message + '\n' });
+        }
+        break;
       case 'tool_started':
         this.emit(task, { type: 'tool.started', task_id: task.id, tool_name: event.tool_name });
         break;
@@ -128,6 +140,11 @@ export class Gateway {
           tool_name: event.tool_name,
           is_error: event.is_error,
         });
+        if (!event.is_error && ['rna_structure', 'lab_rhofold'].includes(event.tool_name)) {
+          for (const artifact of event.artifacts ?? []) {
+            task.artifacts.set(JSON.stringify(artifact), artifact);
+          }
+        }
         break;
       case 'error':
         logger.warn('kernel error event', { task: task.id, message: event.message });
@@ -157,6 +174,7 @@ export class Gateway {
       events: [],
       subscribers: new Set(),
       finished: false,
+      artifacts: new Map(),
     };
     this.tasks.set(task.id, task);
     return task;

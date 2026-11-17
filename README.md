@@ -14,11 +14,11 @@ Code skill (`SKILL.md` + `scripts/lab.py`) — that path is unchanged.
 | path | what |
 |---|---|
 | `SKILL.md`, `scripts/lab.py`, `references/`, `examples/` | existing Claude Code skill for the lab API |
-| `rnaharness/` | Python package: shared lab client, unified envelope, MCP servers |
+| `rnaharness/` | Python package: lab client, local workers, entity/evidence stores, Occamy kernel and MCP servers |
 | `rnaharness/servers/lab_mcp.py` | P0 MCP server: 3 generic + 6 typed RNA tools |
 | `gateway/` | TypeScript gateway: sessions, ack/progress, HTTP + SSE |
 | `config/` | example OpenHarness MCP config |
-| `tests/` | Python tests against a mock lab API (no key needed) |
+| `tests/` | Python tests for the lab API, local workers, entity/evidence and Occamy kernel |
 | `_refs/` | vendored OpenHarness / BioClaw source for reference |
 
 ## Quick start
@@ -63,4 +63,11 @@ for the CLI.
 - [x] mock-backend tests (409 reuse, 429/401/5xx mapping, sha256 verification, schema rejection)
 - [x] gateway skeleton: HTTP channel, session mapping, ack, SSE progress, OpenHarness one-shot kernel
 - [ ] install & verify OpenHarness + MCP end to end
-- [ ] P1 entity layer (`local_mcp`), P2 evidence layer
+- [x] P1 entity layer (`local_mcp`) and P2 evidence layer
+- [x] Local OpenAI-compatible Occamy kernel with dynamic worker discovery and exact RNA sequence references
+- [x] Local worker adapter, ViennaRNA folding, RhoFold+ PDB artifacts, entity/evidence lookup and provenance-aware tools
+
+
+## Local Occamy kernel
+
+The gateway can run the bundled Occamy kernel instead of the `oh` CLI by setting `OPENHARNESS_CMD` to a Python executable and `OPENHARNESS_ARGS` to a JSON argument array containing `scripts/occamy_kernel.py`. Configure `OCCAMY_BASE` and `OCCAMY_MODEL` for the local OpenAI-compatible inference server. The kernel discovers available workers from their OpenAPI contracts and uses loopback endpoints. RhoFold PDB artifacts are surfaced only after a worker confirms a completed job.

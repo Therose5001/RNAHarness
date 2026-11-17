@@ -76,6 +76,27 @@ test('kernel error becomes task.failed', async () => {
   assert.ok(events.some((e) => e.type === 'task.failed'));
 });
 
+test('only successful real tool artifacts survive the gateway', async () => {
+  const artifact = { worker: 'rhofold', job_id: 'job-1', name: 'model.pdb' };
+  const parsed = parseKernelLine(JSON.stringify({ type: 'tool_completed', tool_name: 'rna_structure',
+    is_error: false, artifacts: [artifact, { ...artifact, name: '../secret.pdb' }] }));
+  assert.equal(parsed?.type, 'tool_completed');
+  if (parsed?.type !== 'tool_completed') throw new Error('missing event');
+  assert.deepEqual(parsed.artifacts, [artifact]);
+  const channel = new HttpChannel(async () => undefined);
+  await channel.connect();
+  const gw = new Gateway(channel, new FakeKernel([
+    parsed, parsed,
+    { type: 'tool_completed', tool_name: 'rna_structure', output: '', is_error: true,
+      artifacts: [{ ...artifact, job_id: 'failed' }] },
+    { type: 'assistant_complete', text: '预测完成。' },
+  ]), tempStore());
+  const id = await gw.handleInbound('http:artifact', '输出pdb');
+  const events = await waitFor(gw, id, 'answer.completed');
+  assert.deepEqual(events.filter(e => e.type === 'artifact.ready'),
+    [{ type: 'artifact.ready', task_id: id, ...artifact }]);
+});
+
 test('buildPrompt includes history and the current message', () => {
   const store = tempStore();
   const session = store.getOrCreate('http:u3');

@@ -18,7 +18,7 @@ import json
 import time
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 from .. import envelope as env
 from ..lab_client import LabClient, LabError, validate_params
@@ -27,8 +27,9 @@ SOURCE = "romancohort.lab"
 MAX_WAIT_S = 60  # lab_status may block this long; anything longer is polling
 
 client = LabClient()
-server = MCPServer(
+server = FastMCP(
     "lab_mcp",
+    log_level="WARNING",
     instructions=(
         "RomanCohort lab tools. lab_run returns a run_id immediately; poll "
         "lab_status; fetch outputs with lab_files. Long tools never block a "

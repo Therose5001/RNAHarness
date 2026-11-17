@@ -25,6 +25,9 @@ BACKEND_UNAVAILABLE = "backend_unavailable"
 TIMEOUT = "timeout"
 NETWORK_ERROR = "network_error"
 HASH_MISMATCH = "hash_mismatch"
+NOT_LOADED = "not_loaded"
+DEPENDENCY_MISSING = "dependency_missing"
+UNRESOLVED = "unresolved"
 UNKNOWN = "unknown"
 
 RETRYABLE = {BACKEND_UNAVAILABLE, TIMEOUT, NETWORK_ERROR}
