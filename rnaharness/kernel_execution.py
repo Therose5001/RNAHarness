@@ -77,3 +77,28 @@ def deterministic_summary(tool_runs: list, artifacts: list, reason: str) -> str:
         lines.append("\u672c\u8f6e\u6ca1\u6709\u6536\u5230\u53ef\u4ea4\u4ed8\u7684 PDB \u4ea7\u7269\u3002")
     text = "\n".join(lines)
     return text[:1800] + "\u2026[\u56de\u6267\u5df2\u622a\u65ad]" if len(text) > 1800 else text
+
+
+def compact_tool_result(r: dict) -> dict:
+    """Keep tool output small enough for the model context, without losing truth."""
+    if not isinstance(r, dict):
+        return {"ok": False, "error": {"code": "bad_result"}}
+    if r.get("ok") is False:
+        return {"ok": False, "error": r.get("error")}
+    d = r.get("data")
+    if isinstance(d, dict):
+        keep = {}
+        for k in ("outcome", "evidence", "candidate_passages", "coverage", "note",
+                  "structure", "mfe", "job_id", "score", "in_domain", "calibrated",
+                  "window_nt", "sequence_nt", "n_ready", "n_total", "ready",
+                  "degraded", "unreachable", "matches", "normalized", "result",
+                  "status", "elapsed", "quote_match", "claim_support",
+                  "resolved", "status_reason", "reason", "mirna_ids", "gene_ids",
+                  "canonical_ids", "aliases", "xrefs", "lineage",
+                  "scores", "files", "artifacts", "sequence_source", "prediction"):
+            if k in d:
+                keep[k] = d[k]
+        if not keep:
+            keep = {kk: vv for kk, vv in list(d.items())[:12]}
+        return {"ok": True, "data": keep, "provenance": r.get("provenance")}
+    return {"ok": True, "data": d}

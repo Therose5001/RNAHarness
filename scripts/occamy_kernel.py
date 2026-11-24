@@ -6,8 +6,8 @@ stream-json` and reads NDJSON events from stdout. This script implements that
 same event protocol against the locally running Occamy llama-server, with a
 native OpenAI-style tool-call loop over the already-landed RNAHarness tools.
 
-No external key, no egress: all inference stays on 127.0.0.1:8091 and all
-tool calls are local. Never invents tool output.
+Inference defaults to 127.0.0.1:8091. Configured tool imports can retrieve
+public data from GitHub. Never invents tool output.
 
 Reliability rules learned from local multi-tool tasks (2026-11-14/17):
   * Exact sequences use reference IDs; a truncated generation is continued a
@@ -47,10 +47,11 @@ TIMEOUT = int(os.environ.get("OCCAMY_TIMEOUT_S", "120"))
 MAX_TOKENS = int(os.environ.get("OCCAMY_MAX_TOKENS", "2048"))
 MAX_CONTINUATIONS = int(os.environ.get("OCCAMY_MAX_CONTINUATIONS", "3"))
 
-from rnaharness import kernel_catalog
+from rnaharness import kernel_catalog, tool_imports
 from rnaharness.kernel_catalog import (EXTRA_SPEC, SYSTEM, CONTINUE_HINT)
 from rnaharness.kernel_sequences import register_refs, ref_hint, _resolve, _repair_sequence
 from rnaharness.kernel_execution import (
+    compact_tool_result as _compact,
     ToolRunCache, deterministic_summary, result_artifacts, sanitize_prompt,
     strip_literal_tool_markup,
 )
@@ -72,7 +73,9 @@ def chat(messages: list[dict], with_tools: bool = True) -> dict:
     payload = {"model": MODEL, "messages": messages,
                "max_tokens": MAX_TOKENS, "temperature": 0.0, "stream": False}
     if with_tools:
-        payload["tools"] = kernel_catalog.TOOLS_SPEC
+        payload["tools"] = kernel_catalog.TOOLS_SPEC + [
+            {"type": "function", "function": spec} for spec in tool_imports.tool_specs()
+        ]
         payload["tool_choice"] = "auto"
     req = urllib.request.Request(
         BASE + "/chat/completions",
@@ -138,31 +141,6 @@ def _call_extra(name: str, args: dict) -> dict:
     return {"ok": True, "data": r}
 
 
-def _compact(r: dict) -> dict:
-    """Keep tool output small enough for the model context, without losing truth."""
-    if not isinstance(r, dict):
-        return {"ok": False, "error": {"code": "bad_result"}}
-    if r.get("ok") is False:
-        return {"ok": False, "error": r.get("error")}
-    d = r.get("data")
-    if isinstance(d, dict):
-        keep = {}
-        for k in ("outcome", "evidence", "candidate_passages", "coverage", "note",
-                  "structure", "mfe", "job_id", "score", "in_domain", "calibrated",
-                  "window_nt", "sequence_nt", "n_ready", "n_total", "ready",
-                  "degraded", "unreachable", "matches", "normalized", "result",
-                  "status", "elapsed", "quote_match", "claim_support",
-                  "resolved", "status_reason", "reason", "mirna_ids", "gene_ids",
-                  "canonical_ids", "aliases", "xrefs", "lineage",
-                  "scores", "files", "artifacts", "sequence_source", "prediction"):
-            if k in d:
-                keep[k] = d[k]
-        if not keep:
-            keep = {kk: vv for kk, vv in list(d.items())[:12]}
-        return {"ok": True, "data": keep, "provenance": r.get("provenance")}
-    return {"ok": True, "data": d}
-
-
 def _progress_label(name: str, args: dict) -> str:
     """Short, human-readable description for the live progress stream."""
     show = []
@@ -211,6 +189,8 @@ def tool_call(name: str, args: dict, refs: dict[str, str] | None = None) -> dict
     from rnaharness.proto import adapter, labtools, scoring
     from rnaharness.evidence import search as evidence
     try:
+        if tool_imports.is_import_tool(name):
+            return tool_imports.call_import_tool(name, args)
         # ---- worker tools: OpenAPI-validated real job submission ----
         meta = kernel_catalog.TOOL_META.get(name) or {}
         if meta.get("kind") == "worker":
@@ -332,6 +312,10 @@ def main(argv=None) -> int:
     tool_runs = []
     artifacts = []
     try:
+        if answer := tool_imports.request_link_answer(args.prompt):
+            emit({"type": "assistant_complete", "text": answer})
+            emit({"type": "done", "text": answer})
+            return 0
         direct_ref = structure_ref(clean_prompt, refs)
         if direct_ref:
             return run_structure(direct_ref, refs, tool_call, emit)

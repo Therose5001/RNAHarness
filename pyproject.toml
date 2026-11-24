@@ -14,6 +14,9 @@ dependencies = [
 [project.scripts]
 lab-mcp = "rnaharness.servers.lab_mcp:main"
 
+[project.optional-dependencies]
+research = ["mcp==1.30.0", "ViennaRNA==2.7.2"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["rnaharness"]
 

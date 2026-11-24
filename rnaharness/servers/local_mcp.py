@@ -18,6 +18,7 @@ Run:  python -m rnaharness.servers.local_mcp
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -28,8 +29,10 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import Tool
 
 from .. import envelope as env
+from .. import tool_imports
 from ..entity import (EntityStore, NotLoaded, alias_key, default_db_path,
                       mirna_candidates, normalize_sequence, sequence_hash)
 from ..entity.naming import SequenceError, gene_candidates
@@ -37,7 +40,19 @@ from ..entity.naming import SequenceError, gene_candidates
 SOURCE = "entity"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-server = FastMCP("local_mcp", log_level="WARNING", instructions=(
+class LocalMCP(FastMCP):
+    async def list_tools(self) -> list[Tool]:
+        tools = await super().list_tools()
+        return tools + [Tool(name=spec["name"], description=spec["description"],
+                             inputSchema=spec["parameters"]) for spec in tool_imports.tool_specs()]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]):
+        if tool_imports.is_import_tool(name):
+            return await asyncio.to_thread(tool_imports.call_import_tool, name, arguments)
+        return await super().call_tool(name, arguments)
+
+
+server = LocalMCP("local_mcp", log_level="WARNING", instructions=(
     "Local entity resolution. Resolve sequences and names BEFORE searching "
     "literature or predicting relationships. Every result is "
     "{ok,data,error,provenance,evidence}; branch on error.code."
