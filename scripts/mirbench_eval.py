@@ -29,7 +29,6 @@ import datetime as dt
 import gzip
 import json
 import math
-import sys
 from pathlib import Path
 
 DEFAULT_DATA_DIR = Path(r"C:\baidunetdiskdownload\新建文件夹")

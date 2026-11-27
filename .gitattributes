@@ -1,0 +1,11 @@
+# Keep the index and every checkout LF, regardless of platform.
+* text=auto eol=lf
+
+# Binary payloads: never normalise.
+*.sqlite binary
+*.gz binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdb binary

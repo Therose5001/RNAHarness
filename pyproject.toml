@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "rnaharness"
 version = "0.1.0"
 description = "RNA research harness: MCP tools + gateway + OpenHarness kernel"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.2,<2",
@@ -15,6 +16,7 @@ dependencies = [
 lab-mcp = "rnaharness.servers.lab_mcp:main"
 
 [project.optional-dependencies]
+dev = ["pytest>=8"]
 research = ["mcp==1.30.0", "ViennaRNA==2.7.2"]
 
 [tool.hatch.build.targets.wheel]

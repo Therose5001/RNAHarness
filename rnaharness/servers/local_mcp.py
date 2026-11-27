@@ -33,7 +33,7 @@ from mcp.types import Tool
 
 from .. import envelope as env
 from .. import tool_imports
-from ..entity import (EntityStore, NotLoaded, alias_key, default_db_path,
+from ..entity import (EntityStore, NotLoaded, alias_key,
                       mirna_candidates, normalize_sequence, sequence_hash)
 from ..entity.naming import SequenceError, gene_candidates
 

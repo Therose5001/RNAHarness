@@ -13,19 +13,23 @@ Code skill (`SKILL.md` + `scripts/lab.py`) — that path is unchanged.
 
 | path | what |
 |---|---|
+| `PLAN.md` | full design notes for the harness |
 | `SKILL.md`, `scripts/lab.py`, `references/`, `examples/` | existing Claude Code skill for the lab API |
 | `rnaharness/` | Python package: lab client, local workers, entity/evidence stores, Occamy kernel and MCP servers |
 | `rnaharness/servers/lab_mcp.py` | P0 MCP server: 3 generic + 6 typed RNA tools |
+| `skills/rnaharness-research/` | shared research skill for Claude Code and Codex |
 | `gateway/` | TypeScript gateway: sessions, ack/progress, HTTP + SSE |
+| `scripts/` | entry points: lab CLI, entity/evidence builders, research stack, Occamy kernel |
 | `config/` | example OpenHarness MCP config |
+| `docs/` | build and setup guides (`BUILD.zh-CN.md`) |
 | `tests/` | Python tests for the lab API, local workers, entity/evidence and Occamy kernel |
-| `_refs/` | vendored OpenHarness / BioClaw source for reference |
+| `_refs/` | optional local checkout of OpenHarness / BioClaw source, git-ignored |
 
 ## Quick start
 
-For a fresh Windows checkout with local demo data, a standalone ViennaRNA
-benchmark, and the WeChat and QQ channel adapters, start with
-[从仓库构建 RNAHarness](docs/BUILD.zh-CN.md).
+For a fresh Windows checkout with local demo data and a standalone ViennaRNA
+benchmark, start with [从仓库构建 RNAHarness](docs/BUILD.zh-CN.md). That guide
+also wires the WeChat and QQ channels through the OpenClaw plugins.
 
 Python (MCP server):
 
@@ -37,10 +41,14 @@ export ROMANCOHORT_API_KEY='rc_lab_...'
 .venv/Scripts/python.exe -m rnaharness.servers.lab_mcp
 ```
 
+Add the `research` extra (`-e ".[dev,research]"`) for ViennaRNA and the pinned
+`mcp` version used by the reference-hairpin tool.
+
 Gateway:
 
 ```bash
-cd gateway && npm install && npm run dev
+cd gateway && npm ci && npm run dev
+cd gateway && npm test
 ```
 
 ## Skill CLI (unchanged)
